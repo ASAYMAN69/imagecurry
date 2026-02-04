@@ -1,10 +1,11 @@
 /*
- * Production-Ready HTTP File Server
+ * Production-Ready HTTP File Server with CORS Support
  * 
- * A secure HTTP/1.1 file server supporting GET and POST operations
- * with comprehensive security, error handling, and caching.
+ * A secure HTTP/1.1 file server supporting GET, POST, HEAD, and OPTIONS operations
+ * with comprehensive security, CORS support, error handling, and caching.
  * 
  * Features:
+ * - Full CORS support with * origin
  * - Path traversal prevention
  * - Input validation at all layers
  * - HTTP caching (ETag, Last-Modified)
@@ -48,6 +49,14 @@
 #define LOG_FILE            "./server.log"
 #define REQUEST_TIMEOUT     30
 #define MAX_REQUEST_SIZE    (10 * 1024 * 1024)   // 10MB max request
+
+/* ==================== CORS Headers ==================== */
+
+#define CORS_HEADERS \
+    "Access-Control-Allow-Origin: *\r\n" \
+    "Access-Control-Allow-Methods: GET, POST, HEAD, OPTIONS\r\n" \
+    "Access-Control-Allow-Headers: Content-Type, Content-Length, If-None-Match, If-Modified-Since\r\n" \
+    "Access-Control-Max-Age: 86400\r\n"
 
 /* ==================== Logging ==================== */
 
@@ -254,6 +263,7 @@ void send_response(int fd, int code, const char *status,
     char header[2048];
     int len = snprintf(header, sizeof(header),
         "HTTP/1.1 %d %s\r\n"
+        CORS_HEADERS
         "Content-Type: %s\r\n"
         "Content-Length: %zu\r\n"
         "%s"
@@ -299,6 +309,23 @@ void send_not_modified(int fd, const char *etag, const char *last_modified) {
 }
 
 /* ==================== Request Handlers ==================== */
+
+/**
+ * Handle OPTIONS request - CORS preflight
+ */
+void handle_options(int fd, const char *client_ip, int client_port) {
+    char header[512];
+    int len = snprintf(header, sizeof(header),
+        "HTTP/1.1 204 No Content\r\n"
+        CORS_HEADERS
+        "Connection: close\r\n"
+        "\r\n");
+    
+    send(fd, header, len, 0);
+    
+    log_msg(LOG_INFO, client_ip, client_port, "OPTIONS", "*", 204,
+            "CORS preflight");
+}
 
 /**
  * Handle GET request - download file
@@ -364,6 +391,7 @@ void handle_get(int fd, const char *request, const char *filename,
     char header[1024];
     int hlen = snprintf(header, sizeof(header),
         "HTTP/1.1 200 OK\r\n"
+        CORS_HEADERS
         "Content-Type: %s\r\n"
         "Content-Length: %ld\r\n"
         "%s"
@@ -500,6 +528,7 @@ void handle_head(int fd, const char *filename,
     char header[1024];
     int hlen = snprintf(header, sizeof(header),
         "HTTP/1.1 200 OK\r\n"
+        CORS_HEADERS
         "Content-Type: %s\r\n"
         "Content-Length: %ld\r\n"
         "%s"
@@ -569,6 +598,12 @@ void process_request(int client_fd, struct sockaddr_in *client_addr) {
         log_msg(LOG_WARN, client_ip, client_port, method, path, 400,
                 "Invalid HTTP version: %s", version);
         send_error(client_fd, 400, "Invalid HTTP version");
+        return;
+    }
+    
+    // Handle OPTIONS request (CORS preflight)
+    if (strcmp(method, "OPTIONS") == 0) {
+        handle_options(client_fd, client_ip, client_port);
         return;
     }
     
@@ -672,7 +707,7 @@ int main(void) {
     // Initialize logging
     log_init(LOG_FILE);
     log_msg(LOG_INFO, NULL, 0, NULL, NULL, 0, 
-            "Server starting on port %d", SERVER_PORT);
+            "Server starting on port %d with CORS enabled", SERVER_PORT);
     
     // Create storage directory
     struct stat st;
@@ -732,6 +767,7 @@ int main(void) {
             "Server listening on port %d", SERVER_PORT);
     printf("HTTP File Server running on http://localhost:%d\n", SERVER_PORT);
     printf("Storage directory: %s\n", STORAGE_DIR);
+    printf("CORS: Enabled (Access-Control-Allow-Origin: *)\n");
     printf("Press Ctrl+C to stop\n\n");
     
     // Main server loop

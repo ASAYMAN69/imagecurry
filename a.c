@@ -58,8 +58,10 @@
 #define CORS_HEADERS \
     "Access-Control-Allow-Origin: *\r\n" \
     "Access-Control-Allow-Methods: GET, POST, HEAD, OPTIONS\r\n" \
-    "Access-Control-Allow-Headers: Content-Type, Content-Length, If-None-Match, If-Modified-Since\r\n" \
-    "Access-Control-Max-Age: 86400\r\n"
+    "Access-Control-Allow-Headers: Content-Type, Content-Length, If-None-Match, If-Modified-Since, Authorization\r\n" \
+    "Access-Control-Expose-Headers: Content-Length, Content-Type\r\n" \
+    "Access-Control-Max-Age: 86400\r\n" \
+    "Vary: Origin\r\n"
 
 /* ==================== Logging ==================== */
 
@@ -432,17 +434,52 @@ void handle_get(int fd, const char *request, const char *filename,
 }
 
 void compress_to_webp_background(const char *input_path, const char *output_path) {
+    // Get the directory where the executable is located
+    char exe_path[4096];
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len == -1) {
+        log_msg(LOG_ERROR, NULL, 0, NULL, NULL, 0, "Failed to get executable path");
+        return;
+    }
+    exe_path[len] = '\0';
+    
+    // Remove the executable name to get the directory
+    char *last_slash = strrchr(exe_path, '/');
+    if (last_slash) {
+        *last_slash = '\0';
+    }
+    
+    // Build the path to compressor.sh
+    char compressor_path[4096];
+    int path_len = snprintf(compressor_path, sizeof(compressor_path), "%s/compressor.sh", exe_path);
+    if (path_len < 0 || (size_t)path_len >= sizeof(compressor_path)) {
+        log_msg(LOG_ERROR, NULL, 0, NULL, NULL, 0, "Path too long for compressor.sh");
+        return;
+    }
+    
+    // Check if compressor.sh exists
+    struct stat st;
+    if (stat(compressor_path, &st) != 0) {
+        log_msg(LOG_ERROR, NULL, 0, NULL, NULL, 0, "compressor.sh not found at %s", compressor_path);
+        return;
+    }
+    
     pid_t pid = fork();
     if (pid == 0) {
         signal(SIGCHLD, SIG_DFL);
-        chdir("/mnt/ee/aprojects/imagecdn");
+        chdir(exe_path);
         sleep(1);
 
-        char cmd[1024];
-        snprintf(cmd, sizeof(cmd), "/mnt/ee/aprojects/imagecdn/compressor.sh '%s' '%s'",
-                input_path, output_path);
+        char cmd[8192];
+        int cmd_len = snprintf(cmd, sizeof(cmd), "'%s/compressor.sh' '%s' '%s'",
+                exe_path, input_path, output_path);
+        if (cmd_len < 0 || (size_t)cmd_len >= sizeof(cmd)) {
+            _exit(1);
+        }
         system(cmd);
         _exit(0);
+    } else if (pid < 0) {
+        log_msg(LOG_ERROR, NULL, 0, NULL, NULL, 0, "Fork failed for compression");
     }
 }
 

@@ -36,6 +36,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
 
@@ -149,32 +150,24 @@ void url_decode(char *dst, const char *src) {
     *dst = '\0';
 }
 
-/**
- * Validate filename - prevent path traversal and only allow safe characters
- */
 int valid_filename(const char *name) {
     if (!name || !*name) return 0;
     
-    // Check length
     if (strlen(name) > MAX_FILENAME_LEN) return 0;
     
-    // No leading dots or slashes
     if (name[0] == '.' || name[0] == '/' || name[0] == '\\') return 0;
     
-    // Check for path traversal
     if (strstr(name, "..")) return 0;
     if (strchr(name, '/')) return 0;
     if (strchr(name, '\\')) return 0;
     
-    // Only allow alphanumeric, dot, underscore, hyphen
-    int dot_count = 0;
     for (const char *p = name; *p; p++) {
-        if (*p == '.') {
-            dot_count++;
-            if (dot_count > 1) return 0;  // Only one dot allowed
-        } else if (!(isalnum(*p) || *p == '_' || *p == '-')) {
+        if (!(isalnum(*p) || *p == '.' || *p == '_' || *p == '-')) {
             return 0;
         }
+    }
+    
+    if (strchr(name, '.') == strrchr(name, '.')) {
     }
     
     return 1;
@@ -438,12 +431,28 @@ void handle_get(int fd, const char *request, const char *filename,
             "Sent %zu bytes from serve directory", total_sent);
 }
 
+void compress_to_webp_background(const char *input_path, const char *output_path) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        signal(SIGCHLD, SIG_DFL);
+        chdir("/mnt/ee/aprojects/imagecdn");
+        sleep(1);
+
+        char cmd[1024];
+        snprintf(cmd, sizeof(cmd), "/mnt/ee/aprojects/imagecdn/compressor.sh '%s' '%s'",
+                input_path, output_path);
+        system(cmd);
+        _exit(0);
+    }
+}
+
 /**
  * Handle POST request - upload file to save directory
  */
 void handle_post(int fd, const char *request, const char *filename,
                  const char *body, size_t body_len,
                  const char *client_ip, int client_port) {
+    (void)request;
     
     // Validate file size
     if (body_len > MAX_FILE_SIZE) {
@@ -456,7 +465,6 @@ void handle_post(int fd, const char *request, const char *filename,
     char filepath[512];
     build_save_path(filepath, sizeof(filepath), filename);
     
-    // Write file atomically (write to temp, then rename)
     char temppath[520];
     snprintf(temppath, sizeof(temppath), "%s.tmp", filepath);
     
@@ -486,7 +494,6 @@ void handle_post(int fd, const char *request, const char *filename,
         return;
     }
     
-    // Atomic rename
     if (rename(temppath, filepath) != 0) {
         log_msg(LOG_ERROR, client_ip, client_port, "POST", filename, 500,
                 "Failed to rename file: %s", strerror(errno));
@@ -495,14 +502,31 @@ void handle_post(int fd, const char *request, const char *filename,
         return;
     }
     
-    // Set file permissions to be restrictive
     chmod(filepath, 0600);
-    
+
+    char *last_dot = strrchr(filename, '.');
+    if (!last_dot) {
+        log_msg(LOG_ERROR, client_ip, client_port, "POST", filename, 400,
+                "Filename missing extension");
+        send_error(fd, 400, "Filename must have extension");
+        return;
+    }
+
+    size_t name_len = last_dot - filename;
+    char webp_filename[MAX_FILENAME_LEN + 5];
+    snprintf(webp_filename, sizeof(webp_filename), "%.*s.webp", (int)name_len, filename);
+
+    char webp_path[512];
+    snprintf(webp_path, sizeof(webp_path), "%s/%s", SERVE_DIR, webp_filename);
+
+    compress_to_webp_background(filepath, webp_path);
+
     log_msg(LOG_INFO, client_ip, client_port, "POST", filename, 200,
-            "Uploaded %zu bytes to save directory", body_len);
-    
+            "Uploaded %zu bytes to save directory, compressing to %s",
+            body_len, webp_filename);
+
     char response_body[] = "{\"status\":\"success\"}";
-    send_response(fd, 200, "OK", "application/json", NULL, 
+    send_response(fd, 200, "OK", "application/json", NULL,
                   response_body, strlen(response_body));
 }
 

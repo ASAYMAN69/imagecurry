@@ -13,6 +13,7 @@
  * - Proper error codes
  * - File size limits
  * - Content-Type detection
+ * - Separate directories for serve (GET) and save (POST)
  * 
  * Compilation:
  *   gcc -o fileserver server.c -Wall -Wextra -O2 -D_POSIX_C_SOURCE=200809L
@@ -44,11 +45,12 @@
 #define MAX_CONNECTIONS     128
 #define BUFFER_SIZE         8192
 #define MAX_FILENAME_LEN    255
-#define MAX_FILE_SIZE       (100 * 1024 * 1024)  // 100MB
-#define STORAGE_DIR         "./storage"
+#define MAX_FILE_SIZE       (128 * 1024 * 1024)  // 128MB
+#define SERVE_DIR           "./serve"
+#define SAVE_DIR            "./save"
 #define LOG_FILE            "./server.log"
 #define REQUEST_TIMEOUT     30
-#define MAX_REQUEST_SIZE    (10 * 1024 * 1024)   // 10MB max request
+#define MAX_REQUEST_SIZE    (128 * 1024 * 1024)   // 128MB max request
 
 /* ==================== CORS Headers ==================== */
 
@@ -249,10 +251,17 @@ const char *get_content_type(const char *filename) {
 }
 
 /**
- * Build full file path in storage directory
+ * Build full file path in serve directory (for GET/HEAD requests)
  */
-void build_file_path(char *out, size_t size, const char *filename) {
-    snprintf(out, size, "%s/%s", STORAGE_DIR, filename);
+void build_serve_path(char *out, size_t size, const char *filename) {
+    snprintf(out, size, "%s/%s", SERVE_DIR, filename);
+}
+
+/**
+ * Build full file path in save directory (for POST requests)
+ */
+void build_save_path(char *out, size_t size, const char *filename) {
+    snprintf(out, size, "%s/%s", SAVE_DIR, filename);
 }
 
 /* ==================== HTTP Response Helpers ==================== */
@@ -328,17 +337,17 @@ void handle_options(int fd, const char *client_ip, int client_port) {
 }
 
 /**
- * Handle GET request - download file
+ * Handle GET request - download file from serve directory
  */
 void handle_get(int fd, const char *request, const char *filename,
                 const char *client_ip, int client_port) {
     char filepath[512];
-    build_file_path(filepath, sizeof(filepath), filename);
+    build_serve_path(filepath, sizeof(filepath), filename);
     
     struct stat st;
     if (stat(filepath, &st) != 0) {
         log_msg(LOG_INFO, client_ip, client_port, "GET", filename, 404,
-                "File not found: %s", filename);
+                "File not found in serve directory: %s", filename);
         send_error(fd, 404, "File not found");
         return;
     }
@@ -426,11 +435,11 @@ void handle_get(int fd, const char *request, const char *filename,
     fclose(f);
     
     log_msg(LOG_INFO, client_ip, client_port, "GET", filename, 200,
-            "Sent %zu bytes", total_sent);
+            "Sent %zu bytes from serve directory", total_sent);
 }
 
 /**
- * Handle POST request - upload file
+ * Handle POST request - upload file to save directory
  */
 void handle_post(int fd, const char *request, const char *filename,
                  const char *body, size_t body_len,
@@ -445,7 +454,7 @@ void handle_post(int fd, const char *request, const char *filename,
     }
     
     char filepath[512];
-    build_file_path(filepath, sizeof(filepath), filename);
+    build_save_path(filepath, sizeof(filepath), filename);
     
     // Write file atomically (write to temp, then rename)
     char temppath[520];
@@ -490,7 +499,7 @@ void handle_post(int fd, const char *request, const char *filename,
     chmod(filepath, 0600);
     
     log_msg(LOG_INFO, client_ip, client_port, "POST", filename, 200,
-            "Uploaded %zu bytes", body_len);
+            "Uploaded %zu bytes to save directory", body_len);
     
     char response_body[] = "{\"status\":\"success\"}";
     send_response(fd, 200, "OK", "application/json", NULL, 
@@ -498,17 +507,17 @@ void handle_post(int fd, const char *request, const char *filename,
 }
 
 /**
- * Handle HEAD request - get metadata only
+ * Handle HEAD request - get metadata only from serve directory
  */
 void handle_head(int fd, const char *filename,
                  const char *client_ip, int client_port) {
     char filepath[512];
-    build_file_path(filepath, sizeof(filepath), filename);
+    build_serve_path(filepath, sizeof(filepath), filename);
     
     struct stat st;
     if (stat(filepath, &st) != 0) {
         log_msg(LOG_INFO, client_ip, client_port, "HEAD", filename, 404,
-                "File not found");
+                "File not found in serve directory");
         send_error(fd, 404, "File not found");
         return;
     }
@@ -539,7 +548,7 @@ void handle_head(int fd, const char *filename,
     send(fd, header, hlen, 0);
     
     log_msg(LOG_INFO, client_ip, client_port, "HEAD", filename, 200,
-            "Metadata sent");
+            "Metadata sent from serve directory");
 }
 
 /* ==================== Request Processing ==================== */
@@ -703,22 +712,42 @@ void signal_handler(int signum) {
     server_running = 0;
 }
 
+/**
+ * Create directory if it doesn't exist
+ */
+int ensure_directory(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        if (mkdir(path, 0755) != 0) {
+            log_msg(LOG_ERROR, NULL, 0, NULL, NULL, 0,
+                    "Failed to create directory %s: %s", path, strerror(errno));
+            return 0;
+        }
+        log_msg(LOG_INFO, NULL, 0, NULL, NULL, 0,
+                "Created directory: %s", path);
+    } else if (!S_ISDIR(st.st_mode)) {
+        log_msg(LOG_ERROR, NULL, 0, NULL, NULL, 0,
+                "%s exists but is not a directory", path);
+        return 0;
+    }
+    return 1;
+}
+
 int main(void) {
     // Initialize logging
     log_init(LOG_FILE);
     log_msg(LOG_INFO, NULL, 0, NULL, NULL, 0, 
             "Server starting on port %d with CORS enabled", SERVER_PORT);
     
-    // Create storage directory
-    struct stat st;
-    if (stat(STORAGE_DIR, &st) != 0) {
-        if (mkdir(STORAGE_DIR, 0755) != 0) {
-            log_msg(LOG_ERROR, NULL, 0, NULL, NULL, 0,
-                    "Failed to create storage directory: %s", strerror(errno));
-            return 1;
-        }
-        log_msg(LOG_INFO, NULL, 0, NULL, NULL, 0,
-                "Created storage directory: %s", STORAGE_DIR);
+    // Create both directories
+    if (!ensure_directory(SERVE_DIR)) {
+        fprintf(stderr, "Failed to create serve directory\n");
+        return 1;
+    }
+    
+    if (!ensure_directory(SAVE_DIR)) {
+        fprintf(stderr, "Failed to create save directory\n");
+        return 1;
     }
     
     // Setup signal handlers
@@ -766,7 +795,8 @@ int main(void) {
     log_msg(LOG_INFO, NULL, 0, NULL, NULL, 0,
             "Server listening on port %d", SERVER_PORT);
     printf("HTTP File Server running on http://localhost:%d\n", SERVER_PORT);
-    printf("Storage directory: %s\n", STORAGE_DIR);
+    printf("Serve directory (GET/HEAD): %s\n", SERVE_DIR);
+    printf("Save directory (POST): %s\n", SAVE_DIR);
     printf("CORS: Enabled (Access-Control-Allow-Origin: *)\n");
     printf("Press Ctrl+C to stop\n\n");
     

@@ -20,6 +20,9 @@ std::string generate_etag(const struct stat& st);
 std::string get_content_type(const std::string& filename);
 std::string build_serve_path(const std::string& filename);
 std::string build_save_path(const std::string& filename);
+std::string generate_sha256_uuid();
+std::string detect_extension_from_magic(const std::string& body);
+std::string detect_extension_from_content_type(const std::string& content_type);
 
 }
 #endif

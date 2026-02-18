@@ -4,6 +4,10 @@
 #include <sstream>
 #include <iomanip>
 #include <unordered_map>
+#include <ctime>
+#include <random>
+#include <cstring>
+#include <chrono>
 
 namespace ImageCurry {
 
@@ -140,6 +144,78 @@ std::string build_serve_path(const std::string& filename) {
 
 std::string build_save_path(const std::string& filename) {
     return std::string(SAVE_DIR) + "/" + filename;
+}
+
+std::string generate_sha256_uuid() {
+    auto now = std::chrono::system_clock::now();
+    auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        now.time_since_epoch()).count();
+
+    std::random_device rd;
+    std::mt19937_64 gen(rd());
+    std::uniform_int_distribution<uint64_t> dis;
+
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0') << std::setw(16) << timestamp;
+    oss << std::hex << std::setfill('0') << std::setw(16) << dis(gen);
+    oss << std::hex << std::setfill('0') << std::setw(16) << dis(gen);
+    oss << std::hex << std::setfill('0') << std::setw(16) << dis(gen);
+
+    std::string result = oss.str();
+
+    std::string hash_input = result + std::to_string(time(nullptr));
+    uint64_t hash = 0xcbf29ce484222325;
+    const uint64_t prime = 0x100000001b3;
+
+    for (char c : hash_input) {
+        hash ^= static_cast<uint64_t>(c);
+        hash *= prime;
+    }
+
+    std::ostringstream final_hash;
+    final_hash << result << std::hex << std::setfill('0') << std::setw(16) << hash;
+
+    return final_hash.str();
+}
+
+std::string detect_extension_from_magic(const std::string& body) {
+    if (body.size() < 8) return ".bin";
+
+    const unsigned char* data = reinterpret_cast<const unsigned char*>(body.data());
+
+    if (data[0] == 0xFF && data[1] == 0xD8) {
+        return ".jpg";
+    }
+    if (data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47) {
+        return ".png";
+    }
+    if (data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F' &&
+        data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P') {
+        return ".webp";
+    }
+    if (data[0] == 'G' && data[1] == 'I' && data[2] == 'F') {
+        return ".gif";
+    }
+    if (data[0] == 0x25 && data[1] == 0x50 && data[2] == 0x44 && data[3] == 0x46) {
+        return ".pdf";
+    }
+    if ((data[0] == 'P' && data[1] == 'K') && (data[2] == 0x03 && data[3] == 0x04)) {
+        return ".zip";
+    }
+
+    return ".bin";
+}
+
+std::string detect_extension_from_content_type(const std::string& content_type) {
+    if (content_type == "image/jpeg") return ".jpg";
+    if (content_type == "image/png") return ".png";
+    if (content_type == "image/gif") return ".gif";
+    if (content_type == "image/webp") return ".webp";
+    if (content_type == "application/pdf") return ".pdf";
+    if (content_type == "application/zip") return ".zip";
+    if (content_type == "application/octet-stream") return ".bin";
+
+    return ".bin";
 }
 
 }

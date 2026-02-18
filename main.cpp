@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 
 namespace ImageCurry {
 
@@ -148,30 +149,7 @@ void process_request(int client_fd, const std::string& client_ip, int client_por
 
     size_t query_pos = path.find('?');
     std::string path_only = (query_pos != std::string::npos) ? path.substr(0, query_pos) : path;
-
-    if (path_only != "/") {
-        log_msg(LogLevel::WARN, client_ip, client_port, method, path, 400,
-                "Invalid path");
-        send_error(client_fd, 400, "Invalid path - only / is supported");
-        return;
-    }
-
     std::string query_part = (query_pos != std::string::npos) ? path.substr(query_pos + 1) : "";
-
-    std::string filename;
-    if (query_part.empty() || !get_query_param(query_part, "name", filename)) {
-        log_msg(LogLevel::WARN, client_ip, client_port, method, path, 400,
-                "Missing 'name' parameter");
-        send_error(client_fd, 400, "Missing 'name' parameter");
-        return;
-    }
-
-    if (!valid_filename(filename)) {
-        log_msg(LogLevel::WARN, client_ip, client_port, method, path, 400,
-                "Invalid filename: " + filename);
-        send_error(client_fd, 400, "Invalid filename");
-        return;
-    }
 
     std::string body;
     size_t body_len = 0;
@@ -209,21 +187,49 @@ void process_request(int client_fd, const std::string& client_ip, int client_por
                 }
                 body_len += n;
             }
-            body[body_len] = '\0';
         }
     }
 
-    if (method == "GET") {
-        handle_get(client_fd, request_str, filename, client_ip, client_port);
-    } else if (method == "POST") {
-        handle_post(client_fd, request_str, filename, body, body_len,
-                    client_ip, client_port);
-    } else if (method == "HEAD") {
-        handle_head(client_fd, filename, client_ip, client_port);
+    if (method == "POST") {
+        if (path_only != "/upload") {
+            log_msg(LogLevel::WARN, client_ip, client_port, method, path, 400,
+                    "Invalid path for POST - only /upload is supported");
+            send_error(client_fd, 400, "Invalid path - POST only accepts /upload");
+            return;
+        }
+        handle_upload(client_fd, request_str, body, body_len, client_ip, client_port);
+        return;
+    } else if (method == "GET" || method == "HEAD") {
+        if (path_only != "/retrieve") {
+            log_msg(LogLevel::WARN, client_ip, client_port, method, path, 400,
+                    "Invalid path - GET/HEAD only accepts /retrieve");
+            send_error(client_fd, 400, "Invalid path - GET/HEAD only accepts /retrieve");
+            return;
+        }
+
+        std::string filename;
+        if (query_part.empty() || !get_query_param(query_part, "name", filename)) {
+            log_msg(LogLevel::WARN, client_ip, client_port, method, path, 400,
+                    "Missing 'name' parameter");
+            send_error(client_fd, 400, "Missing 'name' parameter");
+            return;
+        }
+
+        if (!valid_filename(filename)) {
+            log_msg(LogLevel::WARN, client_ip, client_port, method, path, 400,
+                    "Invalid filename: " + filename);
+            send_error(client_fd, 400, "Invalid filename");
+            return;
+        }
+
+        bool is_head = (method == "HEAD");
+        handle_retrieve(client_fd, request_str, filename, client_ip, client_port, is_head);
+        return;
     } else {
         log_msg(LogLevel::WARN, client_ip, client_port, method, path, 501,
                 "Method not implemented");
         send_error(client_fd, 501, "Method not implemented");
+        return;
     }
 }
 
@@ -284,6 +290,8 @@ int main(void) {
     log_msg(LogLevel::INFO, "", 0, "", "", 0,
             "Server listening on port " + std::to_string(SERVER_PORT));
     std::cout << "HTTP File Server running on http://localhost:" << SERVER_PORT << "\n";
+    std::cout << "Upload endpoint: POST /upload\n";
+    std::cout << "Retrieve endpoint: GET/HEAD /retrieve?name=<filename>\n";
     std::cout << "Serve directory (GET/HEAD): " << SERVE_DIR << "\n";
     std::cout << "Save directory (POST): " << SAVE_DIR << "\n";
     std::cout << "CORS: Enabled (Access-Control-Allow-Origin: *)\n";

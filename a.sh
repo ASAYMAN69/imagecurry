@@ -4,7 +4,7 @@ g++ -std=c++17 -o a main.cpp handlers.cpp http_response.cpp utils.cpp logging.cp
     -Wall -Wextra -O2 -D_POSIX_C_SOURCE=200809L
 
 if [ $? -eq 0 ]; then
-    echo "Compilation successful! Executable created: a_cpp"
+    echo "Compilation successful! Executable created: a"
     ls -lh a
 else
     echo "Compilation failed!"
